@@ -1,0 +1,251 @@
+######################################First to import datasets
+destroyX = function(es) {
+  f = es
+  for (col in c(1:ncol(f))){ #for each column in dataframe
+    if (startsWith(colnames(f)[col], "X") == TRUE)  { #if starts with 'X' ..
+      colnames(f)[col] <- substr(colnames(f)[col], 2, 100) #get rid of it
+    }
+  }
+  assign(deparse(substitute(es)), f, inherits = TRUE) #assign corrected data to original name
+}
+library(reshape2)
+library(lubridate)
+library(xts)
+library(tsbox)
+library(zoo)
+library(ggplot2)
+library(caret)
+###############Data frame
+setwd("C:\\Users\\ADMIN\\Desktop\\machine_learning")
+runoff<-read.table("runoff.txt",header=T, na.strings = "NA", sep="\t")
+runoff = destroyX(runoff)
+R = melt(runoff,id.vars=c("Year","month"))
+colnames(R) = c("Year","Month","Day","Q")
+date = as.data.frame(with(R, ymd(paste(Year, Month, Day, sep= ' '))))
+R1 = cbind(R,date)
+R1 = na.omit(R1)
+colnames(R1) = c("Year","Month","Day","Q","Date")
+R1 = R1[order(as.Date(R1$Date, format="%d/%m/%Y")),]
+R1[,4] <- sapply(R1[,4],as.numeric)
+R1$yday = yday(R1$Date)
+R1$quarter = quarter(R1$Date)
+R1$weekdays = weekdays(R1$Date)
+R1$QAVEM = with(R1,ave(R1$Q,R1$Month,FUN=mean)) # for calculate month mean,year mean
+R1$QAVEY = with(R1,ave(R1$Q,R1$Year,FUN=mean))
+R1$Qmonth = with(R1,ave(R1$Q,R1[,1:2],FUN=mean))
+glimpse(R1)
+############################################3time series data frame for daily , lag for autoregression
+TS = xts(x=R1[,"Q"], order.by=R1[,"Date"])
+#m = na.StructTS(ts_ht, na.rm = FALSE, maxgap = Inf) to Interpolate NA 
+TS = ts_ts(TS)
+plot.ts(TS)
+
+lag1day <- lag(TS, -1)
+lag2day<- lag(TS, -2)
+lag3day <- lag(TS, -3)
+lag4day <- lag(TS, -4)
+lag5day <- lag(TS, -5)
+lag6day <- lag(TS, -6)
+lag7day <- lag(TS, -7)
+lag8day <- lag(TS, -8)
+lag9day <- lag(TS, -9)
+lag10day <- lag(TS, -10)
+
+lagdata <- ts.intersect(TS, lag1day,lag2day, lag3day,
+                        lag4day,lag5day, lag6day,
+                        lag7day,lag8day, lag9day,lag10day,
+                        dframe=T)
+
+corR = cor(lagdata, method = "pearson", use = "complete.obs")
+corR = as.data.frame(t(rbind(corR[1,2:11],seq(1:10))))
+tiff("Auto_daily.jpg", width = 6, height = 6, units = 'in', res = 300, compression = 'lzw')
+ggplot(data=corR, aes(x=V2, y=V1)) +
+  geom_line(linetype="dashed")+
+  geom_point()+theme(
+    axis.title=element_text(size=18,face="plain",color="black"),
+    axis.text = element_text(size=18,face="plain",color="black"),
+    legend.title=element_text(size=18,face="plain",color="black"),
+    text=element_text(size=18,  family="Times"),
+    legend.position = "right"# c(0.83,0.15)
+  )+ scale_x_discrete(name ="Lag Days", 
+                      limits=seq(1:10))+
+  scale_y_continuous(limits=c(0.5,1),name="Autocorrelation")
+dev.off()
+############################################t-1.t-2,t-3 as variables############train Test
+Lag123 = ts.intersect(TS, lag1day,lag2day, lag3day, dframe=T)
+R1 = cbind(R1[4:8400,],Lag123)
+R1 = na.omit(R1)
+train = R1[R1$Date <= "2008-01-01",]
+dt =cbind(train[,1:3],train[,6:7],train[,9:11],train[,13:15])
+test = R1[R1$Date > "2008-01-01",]
+test = test[test$Date <= "2011-12-31",]
+#######################3######################################machine learning:Random Forest, 80% data for training , 20% data for testing
+set.seed(123)
+glimpse(train)
+library(randomForest)
+RF = randomForest(Q ~ Year+Month+Day+yday+quarter+
+lag1day+lag2day+lag3day+QAVEM+QAVEY+Qmonth,ntree = 500,mtry = 6
+,data = train,importance = TRUE)
+dt =cbind(train[,1:3],train[,6:7],train[,9:11],train[,13:15])
+t <- tuneRF(dt, train$Q, # to ensure ntry parameter
+            stepFactor = 0.5,
+            plot = TRUE,
+            ntreeTry = 500,
+            trace = TRUE,
+            improve = 0.05)
+importance = RF$importance
+imp = varImpPlot(RF)
+
+pred_y = predict(RF,dt)
+caret::RMSE(test_y, pred_y)
+RF$mse[length(RF$mse)]
+rf_rmse = sqrt(RF$mse[length(RF$mse)])
+#########################################################machine learning:XGBT
+library(xgboost)
+train_x = data.matrix(cbind(train[,1:3],train[,6:7],train[,9:11],train[,13:15]))
+train_y = train$Q
+#define predictor and response variables in testing set
+test_x = data.matrix(cbind(test[,1:3],test[,6:7],test[,9:11],test[,13:15]))
+test_y = test$Q
+xgb_train = xgb.DMatrix(data = train_x, label = train_y)
+xgb_test = xgb.DMatrix(data = test_x, label = test_y)
+watchlist = list(train=xgb_train, test=xgb_test)
+#fit XGBoost model and display training and testing data at each round
+XGBT = xgb.train(data = xgb_train, watchlist=watchlist, nrounds = 70)
+final = xgboost(data = xgb_train,  nrounds = 10 , verbose = 0 )
+pred_y = predict(final,test_x)
+caret::RMSE(test_y, pred_y)
+##################################
+###################################3
+######################################some other codes just for REF
+##################################################################3#machine learning:LSTM,github, but you should installing some packages of R
+library(keras)
+library(tensorflow)
+scale_data = function(train, test, feature_range = c(0, 1)) {
+  x = train
+  fr_min = feature_range[1]
+  fr_max = feature_range[2]
+  std_train = ((x - min(x) ) / (max(x) - min(x)  ))
+  std_test  = ((test - min(x) ) / (max(x) - min(x)  ))
+  
+  scaled_train = std_train *(fr_max -fr_min) + fr_min
+  scaled_test = std_test *(fr_max -fr_min) + fr_min
+  
+  return( list(scaled_train = as.vector(scaled_train), scaled_test = as.vector(scaled_test) ,scaler= c(min =min(x), max = max(x))) )
+  
+}# default activation function for LSTM is sigmoid function whose range is [-1, 1]
+lag_transform <- function(x, k= 1){
+  
+  lagged =  c(rep(NA, k), x[1:(length(x)-k)])
+  DF = as.data.frame(cbind(lagged, x))
+  colnames(DF) <- c( paste0('x-', k), 'x')
+  DF[is.na(DF)] <- 0
+  return(DF)
+}
+supervised = lag_transform(TS, 1)[2:8400,]
+N = nrow(supervised)
+n = round(N *0.8, digits = 0)
+train = supervised[1:n, ]
+test  = supervised[(n+1):N,  ]
+Scaled = scale_data(train, test, c(-1, 1))
+
+y_train = Scaled$scaled_train[, 2]
+x_train = Scaled$scaled_train[, 1]
+
+y_test = Scaled$scaled_test[, 2]
+x_test = Scaled$scaled_test[, 1]
+
+invert_scaling = function(scaled, scaler, feature_range = c(0, 1)){
+  min = scaler[1]
+  max = scaler[2]
+  t = length(scaled)
+  mins = feature_range[1]
+  maxs = feature_range[2]
+  inverted_dfs = numeric(t)
+  
+  for( i in 1:t){
+    X = (scaled[i]- mins)/(maxs - mins)
+    rawValues = X *(max - min) + min
+    inverted_dfs[i] <- rawValues
+  }
+  return(inverted_dfs)
+}
+
+# Reshape the input to 3-dim
+dim(x_train) <- c(length(x_train), 1, 1)
+
+# specify required arguments
+X_shape2 = dim(x_train)[2]
+X_shape3 = dim(x_train)[3]
+batch_size = 1                # must be a common factor of both the train and test samples
+units = 1                     # can adjust this, in model tuninig phase
+
+#=========================================================================================
+
+model <- keras_model_sequential() 
+model%>%
+  layer_lstm(units, batch_input_shape = c(batch_size, X_shape2, X_shape3), stateful= TRUE)%>%
+  layer_dense(units = 1)
+
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_adam( lr= 0.02, decay = 1e-6 ),  
+  metrics = c('accuracy')
+)
+
+Epochs = 50   
+for(i in 1:Epochs ){
+  model %>% fit(x_train, y_train, epochs=1, batch_size=batch_size, verbose=1, shuffle=FALSE)
+  model %>% reset_states()
+}
+L = length(x_test)
+scaler = Scaled$scaler
+predictions = numeric(L)
+
+for(i in 1:L){
+  X = x_test[i]
+  dim(X) = c(1,1,1)
+  yhat = model %>% predict(X, batch_size=batch_size)
+  # invert scaling
+  yhat = invert_scaling(yhat, scaler,  c(-1, 1))
+  # invert differencing
+  yhat  = yhat + Series[(n+i)]
+  # store
+  predictions[i] <- yhat
+}
+######################machine learning:ARIMA
+library(forecast)
+M_ARIMA <- auto.arima(Q)
+myforecast <- forecast(M_ARIMA, level=c(95),h = 10*12)
+plot(myforecast)
+Box.test(M_ARIMA$resid, lag=5, type="Ljung-Box")
+###############
+##################time serise for monthly data 
+m = with(R1,ave(R1$Q,R1$Month,FUN=mean)) # for calculate month mean,year mean
+y = with(R1,ave(R1$Q,R1$Year,FUN=mean)) 
+
+month_q = with(R1,ave(R1$Q,R1[,1:2],FUN=mean))
+monthq = unique(month_q)
+
+ts.complete <- function(data, by, ...) {
+  tb <- tidyr::complete(
+    data,
+    date = seq(
+      min(data[, date]),
+      max(data[, date]),
+      by = by
+    ),
+    fill = list(value = NA)
+  )
+  start_y <- as.numeric(substr(min(tb$date), 1, 4))
+  start_m <- as.numeric(substr(min(tb$date), 6, 7))
+  return(
+    ts(
+      as.numeric(as.matrix(tb[, 2])),
+      start = c(start_y, start_m),
+      ...
+    )
+  )
+}
+
+ts_month = ts.complete(monthq, by = '1 month', frequency = 12)
