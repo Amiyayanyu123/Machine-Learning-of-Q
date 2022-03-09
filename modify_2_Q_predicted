@@ -1,0 +1,220 @@
+####packages
+destroyX = function(es) {
+  f = es
+  for (col in c(1:ncol(f))){ #for each column in dataframe
+    if (startsWith(colnames(f)[col], "X") == TRUE)  { #if starts with 'X' ..
+      colnames(f)[col] <- substr(colnames(f)[col], 2, 100) #get rid of it
+    }
+  }
+  assign(deparse(substitute(es)), f, inherits = TRUE) #assign corrected data to original name
+}
+library(reshape2)
+library(lubridate)
+library(xts)
+library(tsbox)
+library(zoo)
+library(ggplot2)
+library(caret)
+###############Data frame reshape
+setwd("D:\\Runoff_machine_learning")
+runoff<-read.table("Q_daily.txt",header=T, na.strings = "NA", sep="\t")
+runoff = destroyX(runoff)
+R = melt(runoff,id.vars=c("Year","month"))
+colnames(R) = c("Year","Month","Day","Q")
+date = as.data.frame(with(R, ymd(paste(Year, Month, Day, sep= ' '))))
+R1 = cbind(R,date)
+R1 = na.omit(R1)
+colnames(R1) = c("Year","Month","Day","Q","Date")
+R1 = R1[order(as.Date(R1$Date, format="%d/%m/%Y")),]
+R1[,4] <- sapply(R1[,4],as.numeric)
+####add features to this time-series datasets
+R1$yday = yday(R1$Date)
+R1$quarter = quarter(R1$Date)
+R1$QAVEM = with(R1,ave(R1$Q,R1$Month,FUN=mean)) # for calculate month mean,year mean
+R1$QAVEY = with(R1,ave(R1$Q,R1$Year,FUN=mean))
+R1$Qmonth = with(R1,ave(R1$Q,R1[,1:2],FUN=mean))
+########################data frame to ts , for autoregression
+TS = xts(x=R1[,"Q"], order.by=R1[,"Date"])
+#m = na.StructTS(ts_ht, na.rm = FALSE, maxgap = Inf) to Interpolate NA 
+TS = ts_ts(TS)
+plot.ts(TS)
+
+lag1day <- stats::lag(TS, -1)
+lag2day<- stats::lag(TS, -2)
+lag3day <- stats::lag(TS, -3)
+lag4day <- stats::lag(TS, -4)
+lag5day <- stats::lag(TS, -5)
+lag6day <- stats::lag(TS, -6)
+lag7day <- stats::lag(TS, -7)
+lag8day <- stats::lag(TS, -8)
+lag9day <- stats::lag(TS, -9)
+lag10day <- stats::lag(TS, -10)
+
+lagdata <- ts.intersect(TS, lag1day,lag2day, lag3day,
+                        lag4day,lag5day, lag6day,
+                        lag7day,lag8day, lag9day,lag10day,
+                        dframe=T)
+
+corR = cor(lagdata, method = "pearson", use = "complete.obs")
+corR = as.data.frame(t(rbind(corR[1,2:11],seq(1:10))))
+### you can plot to check the autoregression
+ggplot(data=corR, aes(x=V2, y=V1)) +
+  geom_line(linetype="dashed")+
+  geom_point()+theme(
+    axis.title=element_text(size=18,face="plain",color="black"),
+    axis.text = element_text(size=18,face="plain",color="black"),
+    legend.title=element_text(size=18,face="plain",color="black"),
+    text=element_text(size=18),
+    legend.position = "right"# c(0.83,0.15)
+  )+ scale_x_discrete(name ="Lag Days", 
+                      limits=seq(1:10))+
+  scale_y_continuous(limits=c(0.5,1),name="Autocorrelation")
+####t-1.t-2,t-3 as variables to add the data frame############train Test
+Lag123 = ts.intersect(TS, lag1day,lag2day, lag3day, dframe=T)
+R1 = cbind(R1[4:8400,],Lag123)
+R1 = na.omit(R1)
+########################
+train = R1[R1$Date <= "2008-06-01",]
+test = R1[R1$Date > "2008-06-01",]
+test = test[test$Date <= "2011-12-31",]
+train_x = cbind(train[,1:3],train[,5:9],train[,11:13])
+train_y = train$Q
+###########################################3
+set.seed(123)
+library(randomForest)
+dt =cbind(train[,1:3],train[,6:7],train[,9:11],train[,13:15])#
+t <- tuneRF(dt, train$Q, # to ensure ntry parameter
+            stepFactor = 0.5,
+            plot = TRUE,
+            ntreeTry = 500,
+            trace = TRUE,
+            improve = 0.05)
+t = as.data.frame(t)
+library(dplyr)
+mtry_select = t[as.numeric(order(t$OOBError)[1]),]$mtry
+RF = randomForest(Q ~ Year+Month+Day+yday+quarter+
+                    lag1day+lag2day+lag3day+QAVEM+QAVEY+Qmonth,ntree = 500
+                  ,data = train,mtry = mtry_select,importance = TRUE)
+###############
+data_1month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-07-01",]
+x_data_1month = cbind(data_1month[,1:3],data_1month[,6:11],data_1month[,13:15])
+y_data_1month = data_1month$Q
+pred_y_1month = predict(RF,x_data_1month)
+RMSE_1month = caret::RMSE(y_data_1month, pred_y_1month)
+
+data_2month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-08-01",]
+x_data_2month = cbind(data_2month[,1:3],data_2month[,6:11],data_2month[,13:15])
+y_data_2month = data_2month$Q
+pred_y_2month = predict(RF,x_data_2month)
+RMSE_2month = caret::RMSE(y_data_2month, pred_y_2month)
+
+data_3month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-09-01",]
+x_data_3month = cbind(data_3month[,1:3],data_3month[,6:11],data_3month[,13:15])
+y_data_3month = data_3month$Q
+pred_y_3month = predict(RF,x_data_3month)
+RMSE_3month = caret::RMSE(y_data_3month, pred_y_3month)
+plot_data= R1[R1$Date > "2008-06-01" & R1$Date < "2008-09-01",][,4:5]
+write.table(pred_y_1month,"RF_pred_y_1month.csv",row.names=T,sep=",")
+write.table(pred_y_2month,"RF_pred_y_2month.csv",row.names=T,sep=",")
+write.table(pred_y_3month,"RF_pred_y_3month.csv",row.names=T,sep=",")
+write.table(plot_data,"RF_plot_data.csv",row.names=T,sep=",")
+#############plot
+plot_data<-read.table("RF_plot_data.csv",header=T, na.strings = "NA", sep=",")
+plot_data$Date = as.Date(plot_data$Date)
+ggplot(data=plot_data, aes(x=Date)) +
+  geom_line(aes(y=Q),linetype="solid",size=1,color = "#E5191C")+
+  geom_point(aes(y=three),color="black")+
+  theme(axis.title=element_text(size=20,face="bold"),
+        axis.text =element_text(size=17, face="bold"),
+        panel.background=element_rect(colour="black",fill=NA),
+        panel.grid.minor=element_blank(),
+        text=element_text(size=20,face="bold"),
+        legend.position="right",
+        legend.background=element_rect(colour=NA,fill=NA),
+        axis.ticks=element_line(colour="black"))
+##########################################3
+library(xgboost)
+seed(123)
+train_x = data.matrix(cbind(train[,1:3],train[,6:7],train[,9:11],train[,13:15]))
+train_y = train$Q
+#define predictor and response variables in testing set
+test_x = data.matrix(cbind(test[,1:3],test[,6:7],test[,9:11],test[,13:15]))
+test_y = test$Q
+xgb_train = xgb.DMatrix(data = train_x, label = train_y)
+xgb_test = xgb.DMatrix(data = test_x, label = test_y)
+watchlist = list(train=xgb_train, test=xgb_test)
+#fit XGBoost model and display training and testing data at each round
+XGBT = xgb.train(data = xgb_train, watchlist=watchlist, nrounds =70)
+final = xgboost(data = xgb_train,  nrounds = 20 , verbose = 0 )
+#######
+data_1month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-07-01",]
+x_data_1month = cbind(data_1month [,1:3],data_1month [,6:7],data_1month [,9:11],data_1month [,13:15])
+x_data_1month$Day = as.numeric(x_data_1month$Day)
+x_data_1month = as.matrix(x_data_1month)
+y_data_1month = data_1month$Q
+pred_y_1month = predict(final,x_data_1month)
+RMSE_1month = caret::RMSE(y_data_1month, pred_y_1month)
+
+data_2month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-08-01",]
+x_data_2month = cbind(data_2month [,1:3],data_2month [,6:7],data_2month [,9:11],data_2month [,13:15])
+x_data_2month$Day = as.numeric(x_data_2month$Day)
+x_data_2month = as.matrix(x_data_2month)
+y_data_2month = data_2month$Q
+pred_y_2month = predict(final,x_data_2month)
+RMSE_2month = caret::RMSE(y_data_2month, pred_y_2month)
+
+data_3month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-09-01",]
+x_data_3month = cbind(data_3month [,1:3],data_3month [,6:7],data_3month [,9:11],data_3month [,13:15])
+x_data_3month$Day = as.numeric(x_data_3month$Day)
+x_data_3month = as.matrix(x_data_3month)
+y_data_3month = data_3month$Q
+pred_y_3month = predict(final,x_data_3month)
+RMSE_3month = caret::RMSE(y_data_3month, pred_y_3month)
+plot_data= R1[R1$Date > "2008-06-01" & R1$Date < "2008-09-01",][,4:5]
+write.table(pred_y_1month,"XGBT_pred_y_1month.csv",row.names=T,sep=",")
+write.table(pred_y_2month,"XGBT_pred_y_2month.csv",row.names=T,sep=",")
+write.table(pred_y_3month,"XGBT_pred_y_3month.csv",row.names=T,sep=",")
+write.table(plot_data,"XGBT_plot_data.csv",row.names=T,sep=",")
+
+plot_data<-read.table("XGBT_plot_data.csv",header=T, na.strings = "NA", sep=",")
+plot_data$Date = as.Date(plot_data$Date)
+ggplot(data=plot_data, aes(x=Date)) +
+  geom_line(aes(y=Q),linetype="solid",size=1,color = "#567FCA")+
+  geom_point(aes(y=three),color="black")+
+  theme(axis.title=element_text(size=20,face="bold"),
+        axis.text =element_text(size=17, face="bold"),
+        panel.background=element_rect(colour="black",fill=NA),
+        panel.grid.minor=element_blank(),
+        text=element_text(size=20,face="bold"),
+        legend.position="right",
+        legend.background=element_rect(colour=NA,fill=NA),
+        axis.ticks=element_line(colour="black"))
+
+#########################################################
+library(neuralnet)
+train = as.data.frame(cbind(train[,1:4],train[,6:14]))
+train$Day = as.numeric(train$Day)
+nn = neuralnet(Q ~ Year+Month+Day+yday+quarter+
+                 lag1day+lag2day+lag3day+QAVEM+QAVEY+Qmonth
+               ,data = train,hidden =4)
+plot(nn)
+data_1month = R1[R1$Date > "2008-06-01" & R1$Date < "2008-07-01",]
+x_data_1month = cbind(data_1month[,1:3],data_1month[,6:10],data_1month[,12:14])
+x_data_1month$Day = as.numeric(x_data_1month$Day)
+x_data_1month = as.matrix(x_data_1month)
+y_data_1month = data_1month$Q
+pred_y_1month = predict(nn,x_data_1month)
+RMSE_1month = caret::RMSE(y_data_1month, pred_y_1month)
+######################33
+library(mxnet)
+model <- mx.mlp(train_x, train_y, hidden_node=c(5,5), out_node=2, out_activation="softmax", num.round=20, array.batch.size=32, learning.rate=0.07, momentum=0.9, eval.metric=mx.metric.accuracy)
+
+################3
+library(readr)
+library(forecast)
+library(fpp2)
+library(TTR)
+model_tbats <- tbats(TS)
+summary(model_tbats)
+for_tbats <- forecast::forecast(model_tbats,h = 24*7)
+plot(for_tbats)
