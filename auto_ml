@@ -1,0 +1,60 @@
+R<-read.table("R1.csv",header=T, na.strings = "NA", sep=",")
+R= R[order(as.Date(R$Date, format="%d/%m/%Y")),]
+Y=4
+R$Date <- as.POSIXct(R$Date,
+format="%Y/%m/%d" #format time
+)
+
+RF_predict = function(R,Y){
+  library(randomForest)
+  library(dplyr)
+  library(reshape2)
+  library(lubridate)
+  library(xts)
+  library(tsbox)
+  library(zoo)
+  library(ggplot2)
+  library(caret)
+  N_TS = nrow(R)
+  
+  TS = xts(x=R[,"Q"], order.by=R[,"Date"])
+  #m = na.StructTS(ts_ht, na.rm = FALSE, maxgap = Inf) to Interpolate NA 
+  TS = ts_ts(TS)
+  
+  lag1day <- stats::lag(TS, -1)
+  lag2day<- stats::lag(TS, -2)
+  lag3day <- stats::lag(TS, -3)
+  lagdata <- ts.intersect(TS, lag1day,lag2day, lag3day,
+                          dframe=T)
+  ############
+  ####t-1.t-2,t-3 as variables to add the data frame############train Test
+  Lag123 = ts.intersect(TS, lag1day,lag2day, lag3day, dframe=T)
+  R1 = Lag123[4:as.numeric(N_TS),]
+  colnames(R1) = c("lag1day","lag2day","lag3day","Q")
+  R1 = na.omit(R1)
+################
+  train_x = R1[,1:3]
+  train_y = R1[,4]
+###############
+  B = nrow(R1)
+  set.seed(123)
+  train_x = R1
+  RF = randomForest(Q ~ lag1day+lag2day+lag3day,ntree = 500
+                    ,mtry = 3,data = train_x,importance = TRUE)
+ 
+   for (i in 1:Y) {
+    pred = predict(RF,train_x)[B:B]
+    ture = train_x[2:B,1]
+    pred_data = as.data.frame(c(ture,pred))
+    train_x = cbind(pred_data,train_x)[,1:3]
+    colnames(train_x) = c("lag1day","lag2day","lag3day")
+  }
+  
+  predict_1week = train_x$lag1day[as.numeric(B-Y+1):B]
+  print(predict_1week)
+  }
+
+
+  RF_predict(R,Y)
+  
+ 
